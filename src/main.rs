@@ -207,15 +207,15 @@ fn process_workout_element(
         Ok(d) => d,
         Err(_) => return Ok(()), // skip workouts with unparseable dates
     };
-    if let Some(f) = from {
-        if workout_date < f {
-            return Ok(());
-        }
+    if let Some(f) = from
+        && workout_date < f
+    {
+        return Ok(());
     }
-    if let Some(t) = to {
-        if workout_date > t {
-            return Ok(());
-        }
+    if let Some(t) = to
+        && workout_date > t
+    {
+        return Ok(());
     }
 
     // Convert distance to km
@@ -440,4 +440,3 @@ mod tests {
         assert!(workouts.is_empty());
     }
 }
-
