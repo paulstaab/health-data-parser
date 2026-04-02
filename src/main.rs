@@ -206,9 +206,7 @@ fn read_workout_children<R: Read>(xml: &mut Reader<BufReader<R>>) -> Result<Opti
                         _ => {}
                     }
                 }
-                if stat_type.as_deref()
-                    == Some("HKQuantityTypeIdentifierDistanceWalkingRunning")
-                {
+                if stat_type.as_deref() == Some("HKQuantityTypeIdentifierDistanceWalkingRunning") {
                     distance_km = match (sum, unit.as_deref()) {
                         (Some(d), Some("km")) => Some(d),
                         (Some(d), Some("mi")) => Some(d * 1.60934),
