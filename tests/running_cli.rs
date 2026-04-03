@@ -23,18 +23,42 @@ fn run_app(args: &[&str]) -> (i32, String, String) {
 
 struct FileCleanup {
     path: PathBuf,
+    backup_path: Option<PathBuf>,
 }
 
 impl Drop for FileCleanup {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        if let Some(backup_path) = &self.backup_path {
+            let _ = fs::rename(backup_path, &self.path);
+        }
     }
 }
 
 fn install_default_fixture_zip() -> FileCleanup {
     let destination = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("export.zip");
-    fs::copy(fixture_zip(), &destination).unwrap();
-    FileCleanup { path: destination }
+    let backup_path = if destination.exists() {
+        let backup = destination.with_extension("zip.test-backup");
+        if backup.exists() {
+            fs::remove_file(&backup).unwrap();
+        }
+        fs::rename(&destination, &backup).unwrap();
+        Some(backup)
+    } else {
+        None
+    };
+
+    if let Err(err) = fs::copy(fixture_zip(), &destination) {
+        if let Some(backup_path) = &backup_path {
+            let _ = fs::rename(backup_path, &destination);
+        }
+        panic!("failed to install fixture export.zip: {err}");
+    }
+
+    FileCleanup {
+        path: destination,
+        backup_path,
+    }
 }
 
 #[test]
