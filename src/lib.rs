@@ -61,7 +61,7 @@ enum RunningSubcommand {
     Records(FilterArgs),
     /// Show details for a workout. Pass a 1-based index or "latest".
     Show {
-        /// Global 1-based run ID from the list output, or "latest" for the most recent matching workout
+        /// Global 1-based run ID from the list output, or "latest" for the most recent workout
         target: ShowTarget,
     },
 }
