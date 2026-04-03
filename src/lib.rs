@@ -14,6 +14,10 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Path to the Apple Health export ZIP file.
+    #[arg(short, long, global = true, default_value = "./export.zip")]
+    file: PathBuf,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -26,13 +30,19 @@ enum Commands {
 
 #[derive(Args, Debug)]
 struct RunningArgs {
-    /// Path to the Apple Health export ZIP file
-    #[arg(short, long)]
-    file: PathBuf,
+    #[command(subcommand)]
+    subcommand: RunningSubcommand,
+}
 
+#[derive(Args, Debug)]
+struct FilterArgs {
     /// Filter by year (e.g. 2024). Cannot be used together with --from/--to.
     #[arg(long, conflicts_with_all = ["from", "to"])]
     year: Option<i32>,
+
+    /// Filter by month number (1-12). Requires --year.
+    #[arg(long, requires = "year", value_parser = clap::value_parser!(u32).range(1..=12))]
+    month: Option<u32>,
 
     /// Start of time range (inclusive), format: YYYY-MM-DD. Requires --to.
     #[arg(long, requires = "to")]
@@ -41,18 +51,17 @@ struct RunningArgs {
     /// End of time range (inclusive), format: YYYY-MM-DD. Requires --from.
     #[arg(long, requires = "from")]
     to: Option<NaiveDate>,
-
-    #[command(subcommand)]
-    subcommand: RunningSubcommand,
 }
 
 #[derive(Subcommand, Debug)]
 enum RunningSubcommand {
     /// List all running workouts as a table
-    List,
+    List(FilterArgs),
+    /// Show running records for longest run and fastest qualifying distances.
+    Records(FilterArgs),
     /// Show details for a workout. Pass a 1-based index or "latest".
     Show {
-        /// 1-based index from the list output, or "latest" for the most recent workout
+        /// Global 1-based run ID from the list output, or "latest" for the most recent workout
         target: ShowTarget,
     },
 }
@@ -78,7 +87,7 @@ impl std::str::FromStr for ShowTarget {
 }
 
 /// A single running workout extracted from the health export.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RunningWorkout {
     date: String,
     start_time: String,
@@ -92,6 +101,20 @@ struct RunningWorkout {
     user_entered: Option<bool>,
     /// Relative path to GPX file within the ZIP (from WorkoutRoute FileReference)
     gpx_path: Option<String>,
+}
+
+struct IndexedWorkout<'a> {
+    global_index: usize,
+    workout: &'a RunningWorkout,
+}
+
+struct RecordRow {
+    record_type: &'static str,
+    run_id: String,
+    date: String,
+    total_duration: String,
+    pace: String,
+    total_distance: String,
 }
 
 impl RunningWorkout {
@@ -198,51 +221,67 @@ where
 }
 
 fn execute<W: Write>(cli: Cli, stdout: &mut W) -> Result<()> {
-    let Commands::Running(running) = cli.command;
-
-    let workouts = load_running_workouts(&running)?;
-    if workouts.is_empty() {
-        writeln!(
-            stdout,
-            "No running workouts found for the given time range."
-        )?;
-        return Ok(());
-    }
-
-    match running.subcommand {
-        RunningSubcommand::List => print_markdown_table(stdout, &workouts)?,
+    let Cli { file, command } = cli;
+    let Commands::Running(running) = command;
+    match &running.subcommand {
+        RunningSubcommand::List(filters) => {
+            let all_workouts = load_all_running_workouts(&file)?;
+            let (from_date, to_date) = resolve_date_filter(filters)?;
+            let workouts = filter_workouts(&all_workouts, from_date, to_date);
+            if workouts.is_empty() {
+                writeln!(
+                    stdout,
+                    "No running workouts found for the given time range."
+                )?;
+                return Ok(());
+            }
+            print_markdown_table(stdout, &workouts)?;
+        }
+        RunningSubcommand::Records(filters) => {
+            let all_workouts = load_all_running_workouts(&file)?;
+            let (from_date, to_date) = resolve_date_filter(filters)?;
+            let filtered_workouts = filter_workouts(&all_workouts, from_date, to_date);
+            let record_rows = build_record_rows(&filtered_workouts);
+            print_records_table(stdout, &record_rows)?;
+        }
         RunningSubcommand::Show { target } => {
-            let index = match target {
-                ShowTarget::Latest => workouts.len(),
+            let all_workouts = load_all_running_workouts(&file)?;
+            let workout = match target {
+                ShowTarget::Latest => IndexedWorkout {
+                    global_index: all_workouts.len(),
+                    workout: all_workouts.last().context("No running workouts found.")?,
+                },
                 ShowTarget::Index(i) => {
-                    if i == 0 || i > workouts.len() {
+                    if *i == 0 || *i > all_workouts.len() {
                         anyhow::bail!(
-                            "Index {i} is out of range. Valid range: 1–{}",
-                            workouts.len()
+                            "Run ID {i} is out of range. Valid range: 1–{}",
+                            all_workouts.len()
                         );
                     }
-                    i
+                    IndexedWorkout {
+                        global_index: *i,
+                        workout: &all_workouts[*i - 1],
+                    }
                 }
             };
-            show_workout(stdout, index, &workouts[index - 1], &running.file)?;
+            show_workout(stdout, workout.global_index, workout.workout, &file)?;
         }
     }
 
     Ok(())
 }
 
-fn load_running_workouts(running: &RunningArgs) -> Result<Vec<RunningWorkout>> {
-    let (from_date, to_date): (Option<NaiveDate>, Option<NaiveDate>) = if let Some(y) = running.year
-    {
-        let from = NaiveDate::from_ymd_opt(y, 1, 1).expect("valid date");
-        let to = NaiveDate::from_ymd_opt(y, 12, 31).expect("valid date");
-        (Some(from), Some(to))
-    } else {
-        (running.from, running.to)
-    };
+fn load_all_running_workouts(file_path: &PathBuf) -> Result<Vec<RunningWorkout>> {
+    load_running_workouts_in_range(file_path, None, None)
+}
 
-    let file = File::open(&running.file)
-        .with_context(|| format!("Cannot open file: {}", running.file.display()))?;
+fn load_running_workouts_in_range(
+    file_path: &PathBuf,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
+) -> Result<Vec<RunningWorkout>> {
+    let file = File::open(file_path)
+        .with_context(|| format!("Cannot open file: {}", file_path.display()))?;
     let mut archive = ::zip::ZipArchive::new(file).context("Failed to read ZIP archive")?;
     let xml_index = (0..archive.len())
         .find(|&i| {
@@ -259,6 +298,81 @@ fn load_running_workouts(running: &RunningArgs) -> Result<Vec<RunningWorkout>> {
     let mut workouts = extract_running_workouts(xml_entry, from_date, to_date)?;
     sort_workouts(&mut workouts);
     Ok(workouts)
+}
+
+fn resolve_date_filter(filters: &FilterArgs) -> Result<(Option<NaiveDate>, Option<NaiveDate>)> {
+    if let Some(year) = filters.year {
+        if let Some(month) = filters.month {
+            let from = NaiveDate::from_ymd_opt(year, month, 1).with_context(|| {
+                format!("Invalid --year/--month combination: {year}-{month:02}")
+            })?;
+            let (next_year, next_month) = if month == 12 {
+                (
+                    year.checked_add(1)
+                        .with_context(|| format!("Year out of range for --month 12: {year}"))?,
+                    1,
+                )
+            } else {
+                (year, month + 1)
+            };
+            let to = NaiveDate::from_ymd_opt(next_year, next_month, 1)
+                .with_context(|| {
+                    format!(
+                        "Invalid next month while resolving date range: {next_year}-{next_month:02}"
+                    )
+                })?
+                .pred_opt()
+                .context("Failed to resolve month end")?;
+            Ok((Some(from), Some(to)))
+        } else {
+            let from = NaiveDate::from_ymd_opt(year, 1, 1)
+                .with_context(|| format!("Invalid --year value: {year}"))?;
+            let to = NaiveDate::from_ymd_opt(year, 12, 31)
+                .with_context(|| format!("Invalid --year value: {year}"))?;
+            Ok((Some(from), Some(to)))
+        }
+    } else {
+        Ok((filters.from, filters.to))
+    }
+}
+
+fn filter_workouts<'a>(
+    workouts: &'a [RunningWorkout],
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
+) -> Vec<IndexedWorkout<'a>> {
+    workouts
+        .iter()
+        .enumerate()
+        .filter(|(_, workout)| workout_matches_date_filter(workout, from_date, to_date))
+        .map(|(index, workout)| IndexedWorkout {
+            global_index: index + 1,
+            workout,
+        })
+        .collect()
+}
+
+fn workout_matches_date_filter(
+    workout: &RunningWorkout,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
+) -> bool {
+    let Ok(workout_date) = NaiveDate::parse_from_str(&workout.date, "%Y-%m-%d") else {
+        return false;
+    };
+
+    if let Some(from) = from_date
+        && workout_date < from
+    {
+        return false;
+    }
+    if let Some(to) = to_date
+        && workout_date > to
+    {
+        return false;
+    }
+
+    true
 }
 
 fn sort_workouts(workouts: &mut [RunningWorkout]) {
@@ -809,6 +923,99 @@ fn compute_splits(points: &[GpxPoint], hr_records: &[HrRecord]) -> Vec<KmSplit> 
     splits
 }
 
+fn build_record_rows(workouts: &[IndexedWorkout<'_>]) -> Vec<RecordRow> {
+    vec![
+        longest_run_record(workouts),
+        fastest_distance_record("Fastest 5k", workouts, 5.0),
+        fastest_distance_record("Fastest 10k", workouts, 10.0),
+        fastest_distance_record("Fastest Half Marathon", workouts, 21.0975),
+        fastest_distance_record("Fastest Marathon", workouts, 42.195),
+    ]
+}
+
+fn longest_run_record(workouts: &[IndexedWorkout<'_>]) -> RecordRow {
+    let mut best: Option<&IndexedWorkout<'_>> = None;
+
+    for workout in workouts {
+        if best.is_none_or(|current| workout.workout.distance_km > current.workout.distance_km) {
+            best = Some(workout);
+        }
+    }
+
+    record_row_from_workout("Longest Run", best)
+}
+
+fn fastest_distance_record(
+    record_type: &'static str,
+    workouts: &[IndexedWorkout<'_>],
+    min_distance_km: f64,
+) -> RecordRow {
+    let mut best: Option<(&IndexedWorkout<'_>, f64)> = None;
+
+    for workout in workouts {
+        if workout.workout.distance_km + f64::EPSILON < min_distance_km {
+            continue;
+        }
+
+        let Some(avg_pace_secs) = average_pace_seconds(workout.workout) else {
+            continue;
+        };
+
+        if best.is_none_or(|(_, current_pace)| avg_pace_secs < current_pace) {
+            best = Some((workout, avg_pace_secs));
+        }
+    }
+
+    record_row_from_workout(record_type, best.map(|(workout, _)| workout))
+}
+
+fn average_pace_seconds(workout: &RunningWorkout) -> Option<f64> {
+    if workout.distance_km <= 0.0 {
+        return None;
+    }
+
+    let (Ok(start), Ok(end)) = (
+        parse_datetime(&workout.start_time),
+        parse_datetime(&workout.end_time),
+    ) else {
+        return None;
+    };
+
+    let duration_secs = (end - start).num_seconds();
+    if duration_secs <= 0 {
+        return None;
+    }
+
+    Some(duration_secs as f64 / workout.distance_km)
+}
+
+fn record_row_from_workout(
+    record_type: &'static str,
+    workout: Option<&IndexedWorkout<'_>>,
+) -> RecordRow {
+    let Some(workout) = workout else {
+        return RecordRow {
+            record_type,
+            run_id: "-".to_string(),
+            date: "-".to_string(),
+            total_duration: "-".to_string(),
+            pace: "-".to_string(),
+            total_distance: "-".to_string(),
+        };
+    };
+
+    let pace = workout.workout.pace();
+
+    RecordRow {
+        record_type,
+        run_id: workout.global_index.to_string(),
+        date: workout.workout.date.clone(),
+        total_duration: workout.workout.duration(),
+        pace,
+        total_distance: format!("{:.2}", workout.workout.distance_km),
+    }
+}
+
 fn print_show<W: Write>(
     writer: &mut W,
     index: usize,
@@ -848,11 +1055,11 @@ fn print_show<W: Write>(
 
     writeln!(writer)?;
     if has_hr {
-        writeln!(writer, "  km | pace    | avg hr")?;
-        writeln!(writer, "  ---+---------+-------")?;
+        writeln!(writer, "  Split (km) | Pace (min/km) | Avg HR (bpm)")?;
+        writeln!(writer, "  ----------+---------------+-------------")?;
     } else {
-        writeln!(writer, "  km | pace")?;
-        writeln!(writer, "  ---+--------")?;
+        writeln!(writer, "  Split (km) | Pace (min/km)")?;
+        writeln!(writer, "  ----------+---------------")?;
     }
     for split in splits {
         let pace_secs = match split.partial_km {
@@ -870,9 +1077,9 @@ fn print_show<W: Write>(
                 .avg_hr
                 .map(|h| format!("{h:.0}"))
                 .unwrap_or_else(|| "-".to_string());
-            writeln!(writer, "  {} | {:<7}  | {}", km_label, pace, hr)?;
+            writeln!(writer, "  {:<10} | {:<13} | {}", km_label, pace, hr)?;
         } else {
-            writeln!(writer, "  {} | {}", km_label, pace)?;
+            writeln!(writer, "  {:<10} | {}", km_label, pace)?;
         }
     }
 
@@ -880,27 +1087,30 @@ fn print_show<W: Write>(
 }
 
 /// Render the workouts as a Markdown table.
-fn print_markdown_table<W: Write>(writer: &mut W, workouts: &[RunningWorkout]) -> Result<()> {
-    let indices: Vec<String> = (1..=workouts.len()).map(|i| i.to_string()).collect();
-    let dates: Vec<String> = workouts.iter().map(|w| w.date.clone()).collect();
+fn print_markdown_table<W: Write>(writer: &mut W, workouts: &[IndexedWorkout<'_>]) -> Result<()> {
+    let indices: Vec<String> = workouts
+        .iter()
+        .map(|w| w.global_index.to_string())
+        .collect();
+    let dates: Vec<String> = workouts.iter().map(|w| w.workout.date.clone()).collect();
     let starts: Vec<String> = workouts
         .iter()
-        .map(|w| time_part(&w.start_time).to_string())
+        .map(|w| time_part(&w.workout.start_time).to_string())
         .collect();
     let ends: Vec<String> = workouts
         .iter()
-        .map(|w| time_part(&w.end_time).to_string())
+        .map(|w| time_part(&w.workout.end_time).to_string())
         .collect();
-    let durations: Vec<String> = workouts.iter().map(|w| w.duration()).collect();
-    let distances: Vec<f64> = workouts.iter().map(|w| w.distance_km).collect();
-    let paces: Vec<String> = workouts.iter().map(|w| w.pace()).collect();
+    let durations: Vec<String> = workouts.iter().map(|w| w.workout.duration()).collect();
+    let distances: Vec<f64> = workouts.iter().map(|w| w.workout.distance_km).collect();
+    let paces: Vec<String> = workouts.iter().map(|w| w.workout.pace()).collect();
 
     let df = DataFrame::new(vec![
-        Column::new("#".into(), indices),
+        Column::new("Run ID".into(), indices),
         Column::new("Date".into(), dates),
         Column::new("Start".into(), starts),
         Column::new("End".into(), ends),
-        Column::new("Duration (M:SS)".into(), durations),
+        Column::new("Duration (min)".into(), durations),
         Column::new("Distance (km)".into(), distances),
         Column::new("Pace (min/km)".into(), paces),
     ])?;
@@ -942,6 +1152,70 @@ fn print_markdown_table<W: Write>(writer: &mut W, workouts: &[RunningWorkout]) -
                 let val = cell_str(&df, row, i);
                 format!(" {val:<w$} ")
             })
+            .collect::<Vec<_>>()
+            .join("|");
+        writeln!(writer, "|{data_row}|")?;
+    }
+
+    Ok(())
+}
+
+fn print_records_table<W: Write>(writer: &mut W, rows: &[RecordRow]) -> Result<()> {
+    let headers = [
+        "Record Type",
+        "Run ID",
+        "Date",
+        "Duration (min)",
+        "Pace (min/km)",
+        "Distance (km)",
+    ];
+    let data = rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.record_type.to_string(),
+                row.run_id.clone(),
+                row.date.clone(),
+                row.total_duration.clone(),
+                row.pace.clone(),
+                row.total_distance.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    let col_widths = headers
+        .iter()
+        .enumerate()
+        .map(|(column_index, header)| {
+            let max_data = data
+                .iter()
+                .map(|row| row[column_index].len())
+                .max()
+                .unwrap_or(0);
+            max_data.max(header.len())
+        })
+        .collect::<Vec<_>>();
+
+    let header_row = headers
+        .iter()
+        .zip(&col_widths)
+        .map(|(header, width)| format!(" {header:<width$} "))
+        .collect::<Vec<_>>()
+        .join("|");
+    writeln!(writer, "|{header_row}|")?;
+
+    let separator_row = col_widths
+        .iter()
+        .map(|width| "-".repeat(width + 2))
+        .collect::<Vec<_>>()
+        .join("|");
+    writeln!(writer, "|{separator_row}|")?;
+
+    for row in data {
+        let data_row = row
+            .iter()
+            .zip(&col_widths)
+            .map(|(value, width)| format!(" {value:<width$} "))
             .collect::<Vec<_>>()
             .join("|");
         writeln!(writer, "|{data_row}|")?;

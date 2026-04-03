@@ -1,0 +1,55 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Format",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "fmt"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Lint",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "clippy"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "Test",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test"
+            ],
+            "group": "test",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "Build Release",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--release"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        }
+    ]
+}

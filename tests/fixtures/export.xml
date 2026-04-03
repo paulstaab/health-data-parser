@@ -10,6 +10,16 @@
   </Workout>
 
   <Workout workoutActivityType="HKWorkoutActivityTypeRunning"
+           totalDistance="21.0975" totalDistanceUnit="km"
+           startDate="2025-04-06 07:00:00 +0000"
+           endDate="2025-04-06 08:58:00 +0000"/>
+
+  <Workout workoutActivityType="HKWorkoutActivityTypeRunning"
+           totalDistance="42.195" totalDistanceUnit="km"
+           startDate="2025-05-04 06:15:00 +0000"
+           endDate="2025-05-04 10:15:00 +0000"/>
+
+  <Workout workoutActivityType="HKWorkoutActivityTypeRunning"
            totalDistance="2.0" totalDistanceUnit="km"
            sourceName="Synthetic &amp; Run Club"
            device="&lt;Watch6,4&gt;"

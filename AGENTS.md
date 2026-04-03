@@ -2,17 +2,20 @@
 
 ## Project overview
 
-Rust CLI (`health-data-parser`) that parses Apple Health export ZIP files and extracts running workout data. All logic lives in `src/main.rs`.
+Rust CLI (`health-data-parser`) that parses Apple Health export ZIP files and extracts running workout data. Most logic lives in `src/lib.rs`; `src/main.rs` is a thin entrypoint.
 
 ## CLI structure
 
 ```
-health-data-parser running --file <PATH> [--year Y | --from D --to D] <SUBCOMMAND>
-  list            Print a markdown table of all running workouts (with 1-based # index)
+health-data-parser [--file <PATH>] running <SUBCOMMAND>
+  list [--year Y [--month M] | --from D --to D]
+                  Print a markdown table of all running workouts (with 1-based # index)
+  records [--year Y [--month M] | --from D --to D]
+                  Print record rows for longest run and fastest standard distances
   show <N|latest> Show detail view for workout at 1-based index N, or the most recent workout with `latest`
 ```
 
-`--file`, `--year`, `--from`, `--to` belong to the `running` subcommand, not the root.
+`--file` is a root-level option and defaults to `./export.zip`; `--year`, `--month`, `--from`, and `--to` belong to `running list` and `running records`, not `running show`.
 
 ## Key data sources
 
@@ -22,7 +25,7 @@ health-data-parser running --file <PATH> [--year Y | --from D --to D] <SUBCOMMAN
 
 Workouts have **no unique ID** in the export format. Identification is by 1-based position in the sorted list.
 
-## Code structure (`src/main.rs`)
+## Code structure (`src/lib.rs`)
 
 | Item | Purpose |
 |---|---|
@@ -57,12 +60,13 @@ Workouts have **no unique ID** in the export format. Identification is by 1-base
 ## Testing
 
 ```bash
-cargo test                                               # 11 unit tests, must all pass
-cargo run -- running --file example/export.zip list
-cargo run -- running --file example/export.zip show latest
-cargo run -- running --file example/export.zip show 1
-cargo run -- running --file example/export.zip show 999   # should error
-cargo run -- running --file example/export.zip --year 2024 list
+cargo test                                               # all automated tests must pass
+cargo run -- --file example/export.zip running list
+cargo run -- --file example/export.zip running show latest
+cargo run -- --file example/export.zip running show 1
+cargo run -- --file example/export.zip running show 999   # should error
+cargo run -- --file example/export.zip running list --year 2024
+cargo run -- --file example/export.zip running records --year 2025 --month 2
 ```
 
 The example ZIP is at `example/export.zip` (157 MB). Example GPX files are under `example/apple_health_export/workout-routes/`.
