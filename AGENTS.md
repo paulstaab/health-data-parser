@@ -71,6 +71,26 @@ cargo run -- --file example/export.zip running records --year 2025 --month 2
 
 The example ZIP is at `example/export.zip` (157 MB). Example GPX files are under `example/apple_health_export/workout-routes/`.
 
+## Benchmarking
+
+Use `./scripts/benchmark-release.sh` to benchmark the production binary against `example/export.zip` when requested to do so.
+
+The script:
+
+- Builds `target/release/health-data-parser` with `cargo build --release` if the release binary does not exist yet.
+- Runs `running list` once for the full export and once per year for 2016 through 2025; the per-year outputs are also used to identify the first workout in each year for the `running show` benchmarks.
+- Runs `running show <RUN_ID>` for the first chronologically listed workout in each year from 2016 through 2025.
+- Runs `running records` once for the full export and once per year for 2016 through 2025.
+- Measures and reports the runtime for every individual command plus a suite total.
+
+Useful variants:
+
+```bash
+./scripts/benchmark-release.sh
+./scripts/benchmark-release.sh --from-year 2016 --to-year 2016
+./scripts/benchmark-release.sh --binary target/release/health-data-parser --export example/export.zip
+```
+
 ## After every change
 
 Run these three commands in order and fix any issues before considering work done:
